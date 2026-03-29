@@ -1,3 +1,7 @@
+install:
+curl -fsSL https://raw.githubusercontent.com/lidermark255-bit/MTProto/main/install-mtproxy.sh | sudo bash
+
+
 # MTProto Proxy Installer (Ubuntu 22.04/24.04)
 
 Готовый bash-скрипт для автоматической установки MTProto-прокси Telegram на сервер Ubuntu.
