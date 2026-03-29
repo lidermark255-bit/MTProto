@@ -24,6 +24,9 @@ MAX_CONNECTIONS=""
 STATS_PORT=""
 SECRET=""
 PUBLIC_IP=""
+SNI_DOMAIN=""
+CLIENT_SECRET=""
+TRANSPORT_MODE="classic"
 
 log() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -103,6 +106,27 @@ is_port_free() {
   return 0
 }
 
+is_valid_domain() {
+  local domain="$1"
+
+  # Basic domain validation for SNI hostname.
+  (( ${#domain} >= 1 && ${#domain} <= 253 )) || return 1
+  [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+  [[ "$domain" != .* && "$domain" != *. && "$domain" != *..* ]] || return 1
+
+  local labels=()
+  local label=""
+  IFS='.' read -r -a labels <<< "$domain"
+  (( ${#labels[@]} >= 2 )) || return 1
+
+  for label in "${labels[@]}"; do
+    (( ${#label} >= 1 && ${#label} <= 63 )) || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+
+  return 0
+}
+
 ask_port() {
   local raw=""
   local candidate=""
@@ -128,6 +152,32 @@ ask_port() {
     else
       warn "Invalid input. Enter an integer from 1 to 65535."
     fi
+  done
+}
+
+ask_sni_domain() {
+  local raw=""
+  local candidate=""
+
+  while true; do
+    read -r -p "Enter SNI domain for TLS camouflage (empty = disable): " raw < /dev/tty
+
+    # Empty value keeps classic MTProto transport.
+    if [[ -z "${raw//[[:space:]]/}" ]]; then
+      SNI_DOMAIN=""
+      break
+    fi
+
+    candidate="${raw//[[:space:]]/}"
+    candidate="${candidate,,}"
+
+    if ! is_valid_domain "$candidate"; then
+      warn "Invalid domain format. Example: www.cloudflare.com"
+      continue
+    fi
+
+    SNI_DOMAIN="$candidate"
+    break
   done
 }
 
@@ -250,6 +300,20 @@ generate_user_secret() {
   chmod 0600 "${ETC_DIR}/user-secret"
 }
 
+build_client_secret() {
+  if [[ -n "$SNI_DOMAIN" ]]; then
+    local domain_hex=""
+    domain_hex="$(printf '%s' "$SNI_DOMAIN" | od -An -tx1 -v | tr -d ' \n')"
+    [[ -n "$domain_hex" ]] || die "Failed to encode SNI domain to hex."
+
+    CLIENT_SECRET="ee${SECRET}${domain_hex}"
+    TRANSPORT_MODE="fake-tls+sni"
+  else
+    CLIENT_SECRET="$SECRET"
+    TRANSPORT_MODE="classic"
+  fi
+}
+
 find_free_stats_port() {
   local candidate
 
@@ -277,6 +341,13 @@ find_free_stats_port() {
 write_systemd_service() {
   log "Creating systemd service..."
 
+  local exec_start=""
+  if [[ -n "$SNI_DOMAIN" ]]; then
+    exec_start="${BIN_PATH} -u ${RUN_USER} -p ${STATS_PORT} -H ${PORT} -S ${SECRET} -D ${SNI_DOMAIN} -C ${MAX_CONNECTIONS} --aes-pwd ${ETC_DIR}/proxy-secret ${ETC_DIR}/proxy-multi.conf"
+  else
+    exec_start="${BIN_PATH} -u ${RUN_USER} -p ${STATS_PORT} -H ${PORT} -S ${SECRET} -C ${MAX_CONNECTIONS} --aes-pwd ${ETC_DIR}/proxy-secret ${ETC_DIR}/proxy-multi.conf"
+  fi
+
   cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Telegram MTProto Proxy
@@ -287,7 +358,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 ExecStartPre=-${UPDATE_SCRIPT}
-ExecStart=${BIN_PATH} -u ${RUN_USER} -p ${STATS_PORT} -H ${PORT} -S ${SECRET} -C ${MAX_CONNECTIONS} --aes-pwd ${ETC_DIR}/proxy-secret ${ETC_DIR}/proxy-multi.conf
+ExecStart=${exec_start}
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -364,16 +435,21 @@ print_summary() {
     limit_display="$MAX_CONNECTIONS"
   fi
 
-  tg_link="tg://proxy?server=${PUBLIC_IP}&port=${PORT}&secret=${SECRET}"
+  tg_link="tg://proxy?server=${PUBLIC_IP}&port=${PORT}&secret=${CLIENT_SECRET}"
 
   printf '\n'
   printf '=============================================\n'
   printf ' MTProto Proxy installed and started\n'
   printf '=============================================\n'
+  printf 'Transport mode:            %s\n' "$TRANSPORT_MODE"
+  if [[ -n "$SNI_DOMAIN" ]]; then
+    printf 'SNI domain:                %s\n' "$SNI_DOMAIN"
+  fi
   printf 'Port:                      %s\n' "$PORT"
   printf 'Connection limit:          %s\n' "$limit_display"
   printf 'Systemd status:            %s (enabled: %s)\n' "$service_status" "$service_enabled"
-  printf 'Secret:                    %s\n' "$SECRET"
+  printf 'Server secret:             %s\n' "$SECRET"
+  printf 'Client secret:             %s\n' "$CLIENT_SECRET"
   printf 'tg:// link:                %s\n' "$tg_link"
   printf '\n'
   printf 'Logs: journalctl -u %s.service -f\n' "$SERVICE_NAME"
@@ -393,6 +469,9 @@ main() {
   ask_port
 
   # Interactive Question #2
+  ask_sni_domain
+
+  # Interactive Question #3
   ask_max_connections
 
   install_dependencies
@@ -402,6 +481,7 @@ main() {
   write_fetch_script
   fetch_runtime_files
   generate_user_secret
+  build_client_secret
 
   STATS_PORT="$(find_free_stats_port)" || die "Could not find a free local stats port."
 
