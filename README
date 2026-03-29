@@ -1,0 +1,102 @@
+# MTProto Proxy Installer (Ubuntu 22.04/24.04)
+
+Готовый bash-скрипт для автоматической установки MTProto-прокси Telegram на сервер Ubuntu.
+
+Скрипт находится в файле: `install-mtproxy.sh`
+
+## Что делает скрипт
+
+- Проверяет, что ОС — Ubuntu `22.04` или `24.04`.
+- Задает 3 вопроса:
+  1. Порт для прокси.
+  2. SNI-домен для TLS-маскировки (можно оставить пустым).
+  3. Максимум подключений (`0` = unlimited).
+- Проверяет корректность и занятость порта (с повторным вводом при ошибке).
+- Ставит зависимости и собирает **официальный** MTProxy из GitHub Telegram.
+- Настраивает `systemd`-сервис с автозапуском.
+- Показывает итог: порт, лимит, статус сервиса, `secret`, `tg://` ссылку.
+
+## Требования
+
+- Сервер с Ubuntu `22.04` или `24.04`.
+- Доступ в интернет с сервера (для `apt`, GitHub и Telegram config endpoints).
+- Права `root` или `sudo`.
+
+## Установка (если скрипт уже на сервере)
+
+1. Перейдите в папку со скриптом:
+
+```bash
+cd /WibeCode/MTProto
+```
+
+2. Выдайте права на запуск:
+
+```bash
+chmod +x install-mtproxy.sh
+```
+
+3. Запустите установку:
+
+```bash
+sudo ./install-mtproxy.sh
+```
+
+4. Ответьте на 3 вопроса в терминале:
+- `Enter MTProto proxy port (1-65535):`
+- `Enter SNI domain for TLS camouflage (empty = disable):`
+- `Enter max connections (0 = unlimited):`
+
+После завершения скрипт выведет `tg://` ссылку для подключения прокси в Telegram.
+
+## Режим SNI / TLS-маскировки
+
+- Если указать SNI-домен, скрипт запускает MTProxy с `-D <domain>`.
+- Для клиентской ссылки автоматически формируется `secret` в формате FakeTLS:
+  - `ee + <base-secret> + <hex(domain)>`
+- В выводе скрипта показываются:
+  - `Server secret` — внутренний секрет сервера.
+  - `Client secret` — секрет, который нужно использовать в Telegram.
+- Если SNI-домен не указан, используется обычный режим (classic MTProto).
+
+## Установка в одну строку (curl | bash)
+
+Если вы опубликуете `install-mtproxy.sh` по публичному URL (например, GitHub Raw), можно запускать так:
+
+```bash
+curl -fsSL https://YOUR-URL/install-mtproxy.sh | sudo bash
+```
+
+## Полезные команды после установки
+
+Проверить статус сервиса:
+
+```bash
+systemctl status mtproto-proxy.service
+```
+
+Смотреть логи в реальном времени:
+
+```bash
+journalctl -u mtproto-proxy.service -f
+```
+
+Перезапустить сервис:
+
+```bash
+sudo systemctl restart mtproto-proxy.service
+```
+
+## Где лежат файлы
+
+- Бинарник MTProxy: `/opt/mtproxy/mtproto-proxy`
+- Конфиги Telegram: `/etc/mtproxy/proxy-secret`, `/etc/mtproxy/proxy-multi.conf`
+- Пользовательский secret: `/etc/mtproxy/user-secret`
+- Systemd unit: `/etc/systemd/system/mtproto-proxy.service`
+
+## Примечания
+
+- Если `ufw` активен, скрипт автоматически открывает выбранный TCP-порт.
+- Для смены порта/лимита просто запустите скрипт снова — unit будет обновлен.
+- Рекомендуется сохранить выданный `secret` и `tg://` ссылку в безопасном месте.
+- Для SNI-режима выбирайте реально существующий домен с корректным TLS (например, крупные CDN/сайты).
